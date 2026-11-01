@@ -1,18 +1,4 @@
-root@backup[~]# /root/sync-portals.sh curiarium  
-
-Status: Updated metadata configuration for apps
-
-Total Progress: [########################################] 100.00%
-
-null
-
-curiarium:
-
-{
-
- "Web UI": "http://0.0.0.0:5173/"
-
-}TrueNAS Installation Guide
+TrueNAS Installation Guide
 
 Tested on TrueNAS 27.0.0-RC.1 , 
 
