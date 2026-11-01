@@ -1,4 +1,18 @@
-# TrueNAS Installation Guide
+root@backup[~]# /root/sync-portals.sh curiarium  
+
+Status: Updated metadata configuration for apps
+
+Total Progress: [########################################] 100.00%
+
+null
+
+curiarium:
+
+{
+
+ "Web UI": "http://0.0.0.0:5173/"
+
+}TrueNAS Installation Guide
 
 Tested on TrueNAS 27.0.0-RC.1 , 
 
@@ -125,11 +139,69 @@ services:
       - '5173:5173'
     restart: unless-stopped
 
+x-portals:
+  - host: 0.0.0.0
+    name: Web UI
+    path: /
+    port: 5173
+    scheme: http
+```
+
+If using HTTPS change `scheme: http` to `scheme: https`
+
+**Portal Fix Hand Jam**
+
+While testing TrueNAS 27.0.0-RC.1 it was noticed that portals defined in custom apps are not detected by the middleware so the following kludge can be used in the interium
+
+And this can also be applied to other apps using `/root/sync-portals.sh <APPNAME>`
+
+```
+cat > /root/sync-portals.sh <<'EOF'
+#!/bin/sh
+# KLUDGE: TrueNAS 27.0.0-RC.1 does not support x-portals for custom apps.
+# The middleware skips portal discovery when custom_app is true (see the TODOs in
+# middlewared/plugins/apps/crud.py and ix_apps/metadata.py), so the Web UI button
+# never appears even though x-portals is present in the rendered compose file.
+# This script calls the middleware's own portal update function by hand and then
+# regenerates the collective metadata. Rerun it after creating or editing a custom app.
+# Remove it once custom app portal support lands upstream.
+#
+# usage: sync-portals.sh <app> [<app> ...]
+for APP in "$@"; do
+  VER=$(midclt call app.query "[[\"name\",\"=\",\"$APP\"]]" | jq -r '.[0].version')
+  python3 -c "from middlewared.plugins.apps.ix_apps.metadata import update_app_metadata_for_portals as f; f('$APP','$VER')"
+done
+midclt call -j app.metadata.generate
+for APP in "$@"; do
+  echo "$APP:"; midclt call app.query "[[\"name\",\"=\",\"$APP\"]]" | jq '.[0].portals'
+done
+EOF
+```
+
+Set Permissions 
+
+```
+chmod +x /root/sync-portals.sh
+```
+
+/root/sync-portals.sh curiarium 
+
+Example output 
+
+```
+root@backup[~]# /root/sync-portals.sh curiarium  
+Status: Updated metadata configuration for apps
+Total Progress: [########################################] 100.00%
+null
+curiarium:
+{
+  "Web UI": "http://0.0.0.0:5173/"
+}
 ```
 
 ### Application Running within Truenas
 
-![truenas_applications](docs/images/truenas_applications.png)
+![truenas_applications](docs/images/truenas_applications_webui_portal.png)
 
 ### Main Login 
 
