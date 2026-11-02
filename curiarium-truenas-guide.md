@@ -1,10 +1,10 @@
 # TrueNAS Installation Guide
 
-Tested on TrueNAS 27.0.0-RC.1 , 
+Tested on TrueNAS 27.0.0-RC.1.
 
 Apps run as a built-in non-root account called `apps`, which has UID 568 and GID 568.
 
-```bash
+```console
 truenas_admin@backup[~]$ getent passwd 568
 apps:x:568:568:Unprivileged Apps User:/var/empty:/usr/sbin/nologin
 truenas_admin@backup[~]$ getent group 568
@@ -13,44 +13,85 @@ apps:x:568:
 
 For the sake of this guide, Curiarium will use datasets within `/mnt/tank/configs` on a ZFS pool called `tank`.
 
+## Prerequisites
+
+- The Apps service is running. The Installed page shows `Apps Service Running`.
+- A ZFS pool with a `configs` dataset. This guide uses `tank/configs`.
+- Shell access to the TrueNAS host, over SSH or the web shell, with `sudo` or root. The command line equivalents below need it.
+- A way to reach port 5173 on the TrueNAS host from the machines that will use Curiarium.
+
 ## ZFS Datasets
 
-Step 1. Create a dataset called `curiarium` with the parent path `tank/configs` (giving `tank/configs/curiarium`). Set the preset to `Generic`.
+Most of these steps use the TrueNAS web interface. If you prefer the command line, skip to the [command line equivalent](#command-line-equivalent) below.
 
-![add_dataset_curiarium](docs/images/add_dataset_curiarium.png)
+1. Create a dataset called `curiarium` with the parent path `tank/configs`, giving `tank/configs/curiarium`. Set the preset to `Generic`.
 
-Step 2. Add a dataset called `storage` to the `curiarium` dataset from Step 1, using the `Apps` preset.
+   ![Add dataset curiarium](docs/images/add_dataset_curiarium.png)
 
-![add_dataset_storage_preset_apps](docs/images/add_dataset_storage_preset_apps.png)
+2. Add a dataset called `storage` under the `curiarium` dataset from step 1. Set the preset to `Apps`.
 
-Step 3. Add a dataset called `data` to the `curiarium` dataset from Step 1, using the `Generic` preset.
+   ![Add dataset storage with the Apps preset](docs/images/add_dataset_storage_preset_apps.png)
 
-![add_dataset_storage_preset_generic](docs/images/add_dataset_storage_preset_generic.png)
+3. Add a dataset called `data` under the `curiarium` dataset from step 1. Set the preset to `Generic`.
 
-Step 4. Open the Permissions tab for the `data` dataset and select `Edit`.
+   ![Add dataset data with the Generic preset](docs/images/add_dataset_storage_preset_generic.png)
 
-![change_dataset_permissions](docs/images/change_dataset_permissions.png)
+4. Open the Permissions tab for the `data` dataset and select `Edit`.
 
-Set the following permissions:
+   ![Change dataset permissions](docs/images/change_dataset_permissions.png)
 
-- User = `netdata`
-- Group = `docker`
-- Untick the Other read/write permissions
-- Tick `Apply permissions recursively`
+5. Set the following permissions:
 
-Then select `Save`.
+   - User: `netdata`, and select `Apply User`.
+   - Group: `docker`, and select `Apply Group`.
+   - Access for User: Read, Write and Execute.
+   - Access for Group: Read and Execute.
+   - Access for Other: clear Read, Write and Execute.
+   - Select `Apply permissions recursively`. Leave `Apply permissions to child datasets` cleared.
 
-![permissions_edited](docs/images/permissions_edited.png)
+6. Select `Save`.
+
+   ![Edited permissions](docs/images/permissions_edited.png)
+
+These permissions are only the starting state. When the API container starts, its entrypoint runs `chown 568:568` on `storage` and `data` (the default `CHOWN_MODE=minimal`). After the first start, both datasets are owned by `apps:apps`. The mode on `data` stays `750`, so only `apps` can read it.
+
+### Command line equivalent
+
+Run these as root, or with `sudo`, instead of steps 1 to 6:
+
+```bash
+sudo midclt call pool.dataset.create '{"name": "tank/configs/curiarium", "share_type": "GENERIC"}' | jq -r .mountpoint
+sudo midclt call pool.dataset.create '{"name": "tank/configs/curiarium/storage", "share_type": "APPS"}' | jq -r .mountpoint
+sudo midclt call pool.dataset.create '{"name": "tank/configs/curiarium/data", "share_type": "GENERIC"}' | jq -r .mountpoint
+
+sudo midclt call -j filesystem.setperm "{
+  \"path\": \"/mnt/tank/configs/curiarium/data\",
+  \"uid\": $(id -u netdata),
+  \"gid\": $(getent group docker | cut -d: -f3),
+  \"mode\": \"750\",
+  \"options\": {\"recursive\": true}
+}"
+```
+
+Check the result:
+
+```bash
+zfs list -r tank/configs/curiarium
+ls -ld /mnt/tank/configs/curiarium/data
+nfs4xdr_getfacl /mnt/tank/configs/curiarium/storage
+```
+
+Before the app starts, the `data` dataset should be owned by `netdata:docker` with mode `drwxr-x---`. After the first start, it is owned by `apps:apps` with the same mode, and `ls` as a non-root user returns `Permission denied`. That is expected. The ACL on `storage` should include a `user:apps` entry with allow rights, because the `Apps` preset grants access to the `apps` user.
 
 ## Setup Environment
 
-Create the `.env` file. Change `PUBLIC_URL=` to suit your setup.
+Create the `.env` file, and change `PUBLIC_URL` to suit your setup.
 
-`PUBLIC_URL` uses HTTPS in this example, but the app itself serves plain HTTP on port 5173. For an HTTPS URL you need a reverse proxy that terminates TLS and forwards all paths to port 5173. If you only access Curiarium on your LAN over HTTP, leave `PUBLIC_URL` empty and use `CORS_ORIGINS` instead.
+`PUBLIC_URL` uses HTTPS in this example, but the app itself serves plain HTTP on port 5173. An HTTPS URL needs a reverse proxy that terminates TLS and forwards all paths to port 5173. A reverse proxy such as Nginx Proxy Manager (NPM), with a Let's Encrypt certificate or another SSL certificate, is recommended. This guide does not cover setting one up; it was not configured at the time of writing. If you only reach Curiarium over HTTP on your LAN, leave `PUBLIC_URL` empty and use `CORS_ORIGINS` instead.
 
-**Optional:** `CORS_ORIGINS` is a comma-separated list of web addresses that the API will allow to call it from a browser.
+`CORS_ORIGINS` is optional. It is a comma-separated list of web addresses that the API allows to call it from a browser.
 
-**Background.** Browsers enforce the same-origin policy. A page loaded from one origin (scheme, host and port together) cannot read responses from a different origin unless that server says it is allowed, using CORS headers. This means `http://curiarium.example.com:5173` and `http://IP:5173` are different origins, even though they reach the same server.
+Browsers enforce the same-origin policy. A page loaded from one origin (scheme, host and port together) cannot read responses from a different origin, unless that server allows it with CORS headers. `http://curiarium.example.com:5173` and `http://IP:5173` are different origins, even though they reach the same server.
 
 ```bash
 sudo tee /mnt/tank/configs/curiarium/.env >/dev/null <<EOF
@@ -72,7 +113,7 @@ MAX_UPLOAD_MB=4096
 EOF
 ```
 
-If your password contains `$` or a backtick, the shell will expand it inside this heredoc. Edit the file afterwards, or quote the delimiter (`<<'EOF'`) and paste a pre-generated secret instead of using `$(openssl ...)`.
+The shell expands `$` and backticks in this heredoc. That is how `$(openssl rand -hex 32)` generates `AUTH_SECRET`, but it also corrupts an `AUTH_PASSWORD` that contains either character. If your password has one, leave `AUTH_PASSWORD` as it is in the command, then edit the file afterwards and set the real password there.
 
 Set the file to mode `600`, owned by `apps:apps`:
 
@@ -83,19 +124,21 @@ sudo chmod 600 /mnt/tank/configs/curiarium/.env
 
 ## Install App
 
-Select `Discover Apps`.
+Most of these steps use the TrueNAS web interface. If you prefer the command line, skip to the [command line equivalent](#command-line-equivalent-1) below.
 
-![install_step_1](docs/images/install_step_1.png)
+1. Select `Discover Apps`.
 
-Select `More Options`.
+   ![Discover Apps](docs/images/install_step_1.png)
 
-![install_step_2](docs/images/install_step_2.png)
+2. Select `More Options`.
 
-Select `Install via YAML`.
+   ![More Options](docs/images/install_step_2.png)
 
-![install_step_3](docs/images/install_step_3.png)
+3. Select `Install via YAML`.
 
-In the name field enter `curiarium`, then paste the following into the `Custom Config` field:
+   ![Install via YAML](docs/images/install_step_3.png)
+
+4. In the name field, enter `curiarium`. Paste the following into the `Custom Config` field:
 
 ```yaml
 services:
@@ -105,7 +148,7 @@ services:
       - /dev/zfs:/dev/zfs
     env_file:
       - /mnt/tank/configs/curiarium/.env
-    image:  ghcr.io/insanemal/curiarium-api:edge-zfs
+    image: ghcr.io/insanemal/curiarium-api:edge-zfs
     restart: unless-stopped
     volumes:
       - bind:
@@ -133,15 +176,37 @@ x-portals:
     scheme: http
 ```
 
-If using HTTPS change `scheme: http` to `scheme: https`
+If you use HTTPS, change `scheme: http` to `scheme: https`.
 
-**Portal Fix Hand Jam**
+### Command line equivalent
 
-While testing TrueNAS 27.0.0-RC.1 it was noticed that portals defined in custom apps are not detected by the middleware so the following kludge can be used in the interium
+Save the YAML above as `/mnt/tank/configs/curiarium/compose.yaml`. Then create the app from it:
 
-And this can also be applied to other apps using `/root/sync-portals.sh <APPNAME>`
-
+```bash
+sudo midclt call -j app.create "$(jq -n --rawfile compose /mnt/tank/configs/curiarium/compose.yaml \
+  '{app_name: "curiarium", custom_app: true, custom_compose_config_string: $compose}')"
 ```
+
+Check that both containers are running:
+
+```bash
+sudo midclt call app.query '[["name","=","curiarium"]]' | jq '.[0] | {name, state}'
+sudo docker ps --filter name=c_api --filter name=curiarium_web
+```
+
+### ZFS Snapshots
+
+The `edge-zfs` API image includes the ZFS userland tools (`zfsutils-linux`). The plain `edge` image does not, so Curiarium reports "zfs could not be run" even when the dataset is set up correctly. The `/dev/zfs` device in the YAML above gives those tools access to the pool, and TrueNAS already sets up the `apps` user to manage snapshots. Snapshots of the `storage` dataset work out of the box, with no extra setup.
+
+See [Snapshots (ZFS)](curiarium/docs/architecture/CONFIGURATION.md#snapshots-zfs) for how the ZFS provider works.
+
+### Portal Workaround
+
+TrueNAS 27.0.0-RC.1 does not detect portals defined in custom apps, so the `Web UI` button does not appear. Until this is fixed upstream, use the script below. It also works for other custom apps: run `/root/sync-portals.sh <APPNAME>`.
+
+Create the script:
+
+```bash
 cat > /root/sync-portals.sh <<'EOF'
 #!/bin/sh
 # KLUDGE: TrueNAS 27.0.0-RC.1 does not support x-portals for custom apps.
@@ -164,22 +229,22 @@ done
 EOF
 ```
 
-Set Permissions 
+Make it executable:
 
-```
+```bash
 chmod +x /root/sync-portals.sh
 ```
 
-Run the following 
+Run it for the `curiarium` app:
 
-```
-/root/sync-portals.sh curiarium 
+```bash
+/root/sync-portals.sh curiarium
 ```
 
-Example output 
+Example output:
 
-```
-root@backup[~]# /root/sync-portals.sh curiarium  
+```console
+root@backup[~]# /root/sync-portals.sh curiarium
 Status: Updated metadata configuration for apps
 Total Progress: [########################################] 100.00%
 null
@@ -189,10 +254,27 @@ curiarium:
 }
 ```
 
-### Application Running within Truenas
+## Verify
 
-![truenas_applications](docs/images/truenas_applications_webui_portal.png)
+Curiarium appears in the TrueNAS Applications list with the status `Running`, and the Application Info panel has a `Web UI` button.
 
-### Main Login 
+![Curiarium in the TrueNAS Applications list](docs/images/truenas_applications_webui_portal.png)
 
-![main_login](docs/images/main_login.png)
+Select `Web UI`, or browse to `http://<truenas-host>:5173/`. Sign in with `AUTH_USERNAME` and `AUTH_PASSWORD` from the `.env` file. A new library is empty. The sidebar shows the signed-in user and an `ADMIN` badge.
+
+![Curiarium library after signing in](docs/images/main_login.png)
+
+From the command line, check that the web container answers. Run this on another machine on your network, not on the TrueNAS host, because `localhost` on the host does not reach the app. Replace `<truenas-ip>` with the address of your TrueNAS host:
+
+```bash
+curl -sI http://<truenas-ip>:5173/ | head -n 1
+```
+
+The first line of the reply should be `HTTP/1.1 200 OK`.
+
+If the app does not start, read the container logs:
+
+```bash
+sudo docker logs c_api
+sudo docker logs curiarium_web
+```
