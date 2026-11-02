@@ -204,6 +204,8 @@ See [Snapshots (ZFS)](curiarium/docs/architecture/CONFIGURATION.md#snapshots-zfs
 
 TrueNAS 27.0.0-RC.1 does not detect portals defined in custom apps, so the `Web UI` button does not appear. Until this is fixed upstream, use the script below. It also works for other custom apps: run `/root/sync-portals.sh <APPNAME>`.
 
+**Not tested for the command line install.** The script was written for an app installed through the web interface. When the app was created with the command line `app.create` command, TrueNAS reported the `Web UI` portal without the script. Whether the `Web UI` button appears for an app created that way, or whether the script is needed, was not tested.
+
 Create the script:
 
 ```bash
