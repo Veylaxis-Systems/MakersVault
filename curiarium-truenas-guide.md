@@ -170,7 +170,11 @@ Set Permissions
 chmod +x /root/sync-portals.sh
 ```
 
+Run the following 
+
+```
 /root/sync-portals.sh curiarium 
+```
 
 Example output 
 
